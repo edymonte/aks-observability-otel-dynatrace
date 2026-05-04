@@ -38,7 +38,7 @@ variable "cluster_name" {
 variable "kubernetes_version" {
   type        = string
   description = "Kubernetes version for the AKS cluster"
-  default     = "1.29"
+  default     = null
 }
 
 variable "node_count" {
