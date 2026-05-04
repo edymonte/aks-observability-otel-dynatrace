@@ -1,0 +1,1 @@
+# aks-observability-otel-dynatrace
