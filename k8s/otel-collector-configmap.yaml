@@ -27,6 +27,10 @@ metadata:
     app.kubernetes.io/component: observability
 data:
   otel-collector-config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
     receivers:
       otlp:
         protocols:
@@ -77,6 +81,7 @@ data:
         verbosity: normal
 
     service:
+      extensions: [health_check]
       pipelines:
         # Pipeline de Traces
         traces:
