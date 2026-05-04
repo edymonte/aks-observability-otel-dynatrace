@@ -138,18 +138,10 @@ resource "azurerm_kubernetes_cluster" "main" {
 }
 
 # ── Role Assignment: AKS → ACR (AcrPull) ────────────────────────────────────
-# Permite que o kubelet faça pull de imagens do ACR sem credenciais explícitas
-# Utiliza a Managed Identity do kubelet (melhor prática de segurança)
-
-resource "azurerm_role_assignment" "aks_acr_pull" {
-  principal_id                     = azurerm_kubernetes_cluster.main.kubelet_identity[0].object_id
-  role_definition_name             = "AcrPull"
-  scope                            = azurerm_container_registry.acr.id
-  skip_service_principal_aad_check = true
-
-  lifecycle {
-    # Role assignments não suportam update — ignorar drift no principal_id
-    # causado por re-computação após modificação do AKS cluster
-    ignore_changes = [principal_id]
-  }
-}
+# NOTA: Criado manualmente via Cloud Shell (az role assignment create).
+# Gerenciado fora do Terraform para evitar conflito com a restrição de
+# roleAssignments/write da VM Managed Identity.
+#
+# Kubelet OID: obtido via az aks show --query identityProfile.kubeletidentity.objectId
+# Role: AcrPull | Scope: ACR acraksobs20260504
+# Assignment ID: 5a5a0aa3-d1ee-494c-aa22-296e2b814227
