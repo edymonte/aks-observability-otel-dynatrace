@@ -1,0 +1,44 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# APPLICATION — Service
+#
+# Tipos de Service no Kubernetes:
+#   ClusterIP:    Acessível apenas internamente (padrão) — sem IP público
+#   NodePort:     Expõe em uma porta de cada nó — usado para dev/teste simples
+#   LoadBalancer: Provisiona um Azure Load Balancer com IP público — usado aqui
+#   ExternalName: Mapeia para um DNS externo (ex: banco gerenciado)
+#
+# Em produção com AKS, combine LoadBalancer com um Ingress Controller
+# (NGINX, Azure Application Gateway) para:
+#   - TLS termination (HTTPS)
+#   - Path-based routing
+#   - Rate limiting
+#   - WAF integration
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-demo-app
+  namespace: observability-lab
+  labels:
+    app.kubernetes.io/name: otel-demo-app
+    app.kubernetes.io/component: backend
+  annotations:
+    # Annotation do Azure: cria um IP público estático já provisionado no Azure
+    # service.beta.kubernetes.io/azure-load-balancer-resource-group: "rg-aks-observability"
+
+    # Annotation para health probe do Azure Load Balancer
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: "/health"
+
+spec:
+  type: LoadBalancer  # Em produção, prefira usar Ingress + ClusterIP
+
+  selector:
+    app: otel-demo-app  # Seleciona pods com este label
+
+  ports:
+    - name: http
+      port: 80          # Porta exposta externamente
+      targetPort: 3000  # Porta do container
+      protocol: TCP
+
+  # sessionAffinity: ClientIP  # Habilitar se a app for stateful (não recomendado para stateless)

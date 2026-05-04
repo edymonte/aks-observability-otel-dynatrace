@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# NAMESPACE
+# Isola todos os recursos deste projeto em um namespace dedicado.
+# Boas práticas:
+#   - Facilita RBAC (Role-Based Access Control) por namespace
+#   - Permite quotas de recursos (ResourceQuota) por equipe/projeto
+#   - Facilita visualização e filtragem no Dynatrace (tag: namespace)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability-lab
+  labels:
+    # Labels são usados pelo Dynatrace para identificar o namespace
+    app.kubernetes.io/managed-by: kubectl
+    environment: production
+    team: platform-engineering

@@ -1,0 +1,207 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI/CD Pipeline — GitHub Actions
+#
+# FLUXO GERAL:
+#   Push / PR → Build & Test → Push ACR → Deploy AKS
+#
+# SECRETS necessários no repositório GitHub (Settings → Secrets and variables):
+#   AZURE_CLIENT_ID       → App Registration Client ID (OIDC)
+#   AZURE_TENANT_ID       → Azure Tenant ID
+#   AZURE_SUBSCRIPTION_ID → Azure Subscription ID
+#   ACR_NAME              → Nome do Azure Container Registry (sem .azurecr.io)
+#   AKS_CLUSTER_NAME      → Nome do cluster AKS
+#   AKS_RESOURCE_GROUP    → Resource Group do AKS
+#
+# AUTENTICAÇÃO: Usa OIDC Federated Identity (sem secrets de longa duração!)
+#   - Mais seguro que Service Principal com client_secret
+#   - Requer configuração de Federated Credential no App Registration
+# ─────────────────────────────────────────────────────────────────────────────
+name: CI/CD — Build, Push & Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:  # permite execução manual pelo GitHub UI
+
+env:
+  IMAGE_NAME: otel-demo-app
+  K8S_NAMESPACE: observability-lab
+
+# Permissões mínimas para OIDC + deploy
+permissions:
+  id-token: write   # necessário para autenticação OIDC com Azure
+  contents: read
+  packages: write
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 1: Build & Test
+  # Roda em todo push e PR — garante qualidade antes de buildar a imagem
+  # ────────────────────────────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: app/package.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      # Adicione testes reais aqui (Jest, Mocha, etc.)
+      # - name: Run unit tests
+      #   working-directory: app
+      #   run: npm test
+
+      - name: Lint Dockerfile
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: app/Dockerfile
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 2: Build Docker Image & Push to ACR
+  # Apenas em push para main/release (não em PRs)
+  # ────────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ACR
+    runs-on: ubuntu-latest
+    needs: build-and-test  # espera o job anterior
+    if: github.event_name == 'push'  # não executa em PRs
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+      image-digest: ${{ steps.build-push.outputs.digest }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # OIDC Login: sem secrets de longa duração!
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name ${{ secrets.ACR_NAME }}
+
+      # Gera tags automáticas baseadas em: branch, SHA, semver
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # BuildKit: builds paralelos, cache eficiente
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache de layers no ACR (evita re-build de camadas inalteradas)
+          cache-from: type=registry,ref=${{ secrets.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+      - name: Image summary
+        run: |
+          echo "## Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| -------- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | ${{ secrets.ACR_NAME }}.azurecr.io |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image    | ${{ env.IMAGE_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag      | ${{ steps.meta.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Digest   | ${{ steps.build-push.outputs.digest }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 3: Deploy to AKS
+  # Apenas em push para main
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AKS
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    environment: production  # requer aprovação manual (configure em Settings → Environments)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set AKS context (configure kubectl)
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+
+      # Atualiza a imagem no Deployment sem reapply do manifest inteiro
+      # Alternativa mais robusta: usar Helm ou Kustomize
+      - name: Update image in deployment manifest
+        run: |
+          IMAGE_FULL="${{ secrets.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }}"
+          sed -i "s|<acr-name>.azurecr.io/otel-demo-app:latest|${IMAGE_FULL}|g" k8s/app-deployment.yaml
+          echo "Deploying image: ${IMAGE_FULL}"
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/secret-dynatrace.yaml
+          kubectl apply -f k8s/otel-collector-configmap.yaml
+          kubectl apply -f k8s/otel-collector-deployment.yaml
+          kubectl apply -f k8s/app-deployment.yaml
+          kubectl apply -f k8s/app-service.yaml
+
+      - name: Wait for rollout to complete
+        run: |
+          kubectl rollout status deployment/otel-demo-app \
+            --namespace=${{ env.K8S_NAMESPACE }} \
+            --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          echo "## Deployment Status" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          kubectl get service otel-demo-app -n ${{ env.K8S_NAMESPACE }} >> $GITHUB_STEP_SUMMARY
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed — rolling back..."
+          kubectl rollout undo deployment/otel-demo-app \
+            --namespace=${{ env.K8S_NAMESPACE }}

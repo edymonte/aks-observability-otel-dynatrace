@@ -1,0 +1,155 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# APPLICATION — Deployment
+#
+# Boas práticas demonstradas neste manifest:
+#   - RollingUpdate strategy com maxUnavailable/maxSurge
+#   - Liveness e Readiness Probes
+#   - Resource requests e limits (QoS Guaranteed)
+#   - Variáveis de ambiente via Secret e ConfigMap
+#   - SecurityContext (non-root, read-only filesystem)
+#   - Pod Disruption Budget (ver PDB separado se necessário)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-demo-app
+  namespace: observability-lab
+  labels:
+    app.kubernetes.io/name: otel-demo-app
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2  # mínimo 2 para Alta Disponibilidade
+
+  selector:
+    matchLabels:
+      app: otel-demo-app
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1   # máximo de pods indisponíveis durante update
+      maxSurge: 1         # máximo de pods extras durante update
+
+  template:
+    metadata:
+      labels:
+        app: otel-demo-app
+        app.kubernetes.io/name: otel-demo-app
+        version: "1.0.0"
+      annotations:
+        # Dynatrace OneAgent pode usar esta annotation para auto-instrumentação
+        # (alternativa ao SDK manual — mas OTEL SDK é mais portável)
+        dynatrace.com/inject: "false"  # desativado pois usamos OTEL SDK manual
+
+    spec:
+      # Garante que pods sejam distribuídos entre nós diferentes (HA)
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - otel-demo-app
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: otel-demo-app
+          # Substituir <acr-name> pelo nome real do seu Azure Container Registry
+          image: <acr-name>.azurecr.io/otel-demo-app:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          env:
+            # Configuração do OTEL SDK
+            - name: OTEL_SERVICE_NAME
+              value: "otel-demo-app"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.observability-lab.svc.cluster.local:4318"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=dev,service.version=1.0.0"
+
+            # Configurações da aplicação
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            - name: DEPLOYMENT_ENV
+              value: "dev"
+
+            # Injeta o Pod name como atributo de recurso (útil para debug no Dynatrace)
+            - name: K8S_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+            # QoS Class = Burstable (requests < limits)
+            # Para QoS Guaranteed: requests == limits
+
+          # Readiness: pod só recebe tráfego após passar neste check
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+          # Liveness: Kubernetes reinicia o container se este falhar
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+          # Startup Probe: evita que liveness mate o container durante inicialização lenta
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            failureThreshold: 10
+            periodSeconds: 5
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            # tmpdir necessário pois readOnlyRootFilesystem=true
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      # Tempo máximo para graceful shutdown (deve ser > timeout dos requests em andamento)
+      terminationGracePeriodSeconds: 30

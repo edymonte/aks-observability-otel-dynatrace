@@ -1,10 +1,13 @@
-# AKS Observability with OpenTelemetry and Dynatrace
+# Cloud-Native Observability — AKS + OpenTelemetry + Dynatrace
 
-## 📌 Overview
+> Projeto de estudo para entrevistas de DevOps/SRE/Platform Engineering.
+> Demonstra uma arquitetura de observabilidade end-to-end em Kubernetes.
 
-This project demonstrates a cloud-native observability architecture using **Azure Kubernetes Service (AKS)**, **OpenTelemetry**, and **Dynatrace**.
+## Visão Geral
 
-The goal is to provide **end-to-end visibility** into a distributed application by collecting, processing, and analyzing telemetry data such as **traces, metrics, and logs**.
+Arquitetura cloud-native de observabilidade usando **Azure Kubernetes Service (AKS)**, **OpenTelemetry** e **Dynatrace**.
+
+O objetivo é fornecer **visibilidade completa** de uma aplicação distribuída coletando, processando e analisando **traces, métricas e logs** (os três pilares da observabilidade).
 
 ---
 
@@ -48,106 +51,197 @@ Dynatrace Platform
 
 ---
 
-## 📁 Project Structure
+## Estrutura do Projeto
 
-├── app/ # Application source code
-├── k8s/ # Kubernetes manifests
-├── terraform/ # AKS infrastructure
-├── .github/workflows/ # CI/CD pipeline
+```
+aks-observability-otel-dynatrace/
+│
+├── app/
+│   ├── Dockerfile                    # Multi-stage build, non-root user
+│   ├── package.json                  # SDK OTEL + Express
+│   └── server.js                     # App instrumentada com traces e métricas
+│
+├── k8s/
+│   ├── namespace.yaml                # Namespace "observability"
+│   ├── secret-dynatrace.yaml         # API Token e Endpoint do Dynatrace
+│   ├── otel-collector-configmap.yaml # Pipeline: receivers → processors → exporters
+│   ├── otel-collector-deployment.yaml# Deployment + Service do Collector
+│   ├── app-deployment.yaml           # Deployment da app (probes, affinity, security)
+│   └── app-service.yaml              # LoadBalancer Service
+│
+├── terraform/
+│   ├── main.tf                       # AKS, ACR, Log Analytics, RBAC
+│   ├── variables.tf                  # Variáveis com tipos e descrições
+│   └── outputs.tf                    # Outputs para CI/CD e outros módulos
+│
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yaml                # Build → Push ACR → Deploy AKS (OIDC)
+│
 └── README.md
+```
 
+## Arquitetura
 
----
+```
+Usuário → Requisição HTTP
+               ↓
+       Application (AKS Pod)
+       Node.js + OTEL SDK
+               ↓  OTLP/gRPC
+       OpenTelemetry Collector  ← ConfigMap com pipeline
+               ↓  OTLP/HTTP
+       Dynatrace Platform
+       (Traces, Métricas, Logs)
+```
 
-## 🚀 Getting Started
+## Pré-requisitos
 
-### 1. Prerequisites
+- Azure subscription com permissão de Contributor
+- AKS cluster (ou provisionar via Terraform)
+- Docker e kubectl instalados e configurados
+- Conta no Dynatrace (trial gratuito: 15 dias)
+- API Token do Dynatrace com escopos: `metrics.ingest`, `traces.ingest`, `logs.ingest`
 
-- Azure subscription
-- AKS cluster
-- Docker
-- kubectl configured
-- Dynatrace environment
-- Dynatrace API Token
+## Como Executar
 
----
-
-### 2. Build and Push Image
+### 1. Provisionar Infraestrutura
 
 ```bash
-docker build -t <acr-name>.azurecr.io/otel-demo-app:latest ./app
-docker push <acr-name>.azurecr.io/otel-demo-app:latest
+cd terraform
 
-### 3. Deploy to AKS
+# Crie um arquivo terraform.tfvars com seus valores:
+cat > terraform.tfvars <<EOF
+subscription_id     = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+acr_name            = "acraksobs20240101"
+resource_group_name = "rg-aks-observability"
+EOF
 
-kubectl apply -f k8s/namespace.yaml
+terraform init
+terraform plan
+terraform apply
+```
+
+### 2. Configurar kubectl
+
+```bash
+# Use o output do Terraform diretamente:
+$(terraform output -raw get_credentials_command)
+```
+
+### 3. Criar o Secret do Dynatrace
+
+```bash
+# Nunca commite tokens reais no YAML!
+kubectl create secret generic dynatrace-secret \
+  --namespace=observability-lab \
+  --from-literal=DT_OTLP_ENDPOINT='https://<env-id>.live.dynatrace.com/api/v2/otlp' \
+  --from-literal=DT_API_TOKEN='Api-Token dt0c01.SEU_TOKEN'
+```
+
+### 4. Build e Push da Imagem
+
+```bash
+ACR_NAME=$(cd terraform && terraform output -raw acr_login_server)
+
+az acr login --name <acr-name>
+docker build -t ${ACR_NAME}/otel-demo-app:latest ./app
+docker push ${ACR_NAME}/otel-demo-app:latest
+```
+
+### 5. Deploy no AKS
+
+```bash
+kubectl apply -f k8s/namespace.yaml          # cria o namespace observability-lab
 kubectl apply -f k8s/secret-dynatrace.yaml
 kubectl apply -f k8s/otel-collector-configmap.yaml
 kubectl apply -f k8s/otel-collector-deployment.yaml
 kubectl apply -f k8s/app-deployment.yaml
 kubectl apply -f k8s/app-service.yaml
 
-🔎 Observability Concepts
-📊 Metrics
+# Verificar status
+kubectl get pods -n observability-lab
+kubectl get services -n observability-lab
+```
 
-Provide numerical insights into system performance
-Examples: CPU, memory, latency
+### 6. Testar a Aplicação
 
-🔗 Traces
+```bash
+# Obter o IP externo do LoadBalancer
+EXTERNAL_IP=$(kubectl get svc otel-demo-app -n observability-lab -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
-Represent the full journey of a request across services
+curl http://$EXTERNAL_IP/           # rota principal
+curl http://$EXTERNAL_IP/checkout   # simula fluxo de checkout (300ms delay + span)
+curl http://$EXTERNAL_IP/error      # simula erro (span com status ERROR)
+curl http://$EXTERNAL_IP/chain      # três spans encadeados (parent → child)
+curl http://$EXTERNAL_IP/health     # health check (liveness/readiness)
+```
 
-🧩 Spans
+## Conceitos-Chave para Entrevista
 
-Individual operations inside a trace
+### Os 3 Pilares da Observabilidade
 
-📄 Logs
+| Pilar | O que é | Ferramenta neste projeto |
+|-------|---------|--------------------------|
+| **Traces** | Jornada completa de uma requisição (spans encadeados) | OTEL SDK + Dynatrace |
+| **Métricas** | Dados numéricos agregados ao longo do tempo | OTEL Metrics + Dynatrace |
+| **Logs** | Registros de eventos com contexto | OTEL Logs + Dynatrace |
 
-Detailed event records for debugging
+### Rotas da aplicação
 
+| Rota | Comportamento | Conceito demonstrado |
+|------|--------------|----------------------|
+| `GET /` | Resposta imediata | Span simples com atributos |
+| `GET /checkout` | 300ms delay (simula chamada externa) | Latência de negócio, axios propagation |
+| `GET /error` | Retorna 500 | Span com `SpanStatusCode.ERROR` |
+| `GET /chain` | 3 spans filhos sequenciais | Context propagation, parent→child |
+| `GET /health` | Health check | Probe sem ruído nos traces |
 
-🧠 Troubleshooting Strategy
-Analyze metrics to detect anomalies
-Use traces to identify bottlenecks
-Correlate with logs and infrastructure data
-Identify root cause and validate impact
+### Span × Trace
 
-🔥 Key Features
-Distributed tracing with OpenTelemetry
-Centralized telemetry via OTEL Collector
-Integration with Dynatrace using OTLP
-Kubernetes-native deployment
-Simulated latency and error scenarios
+- **Trace**: representa uma transação completa (ex: requisição HTTP de ponta a ponta)
+- **Span**: operação individual dentro do trace (ex: query no banco, chamada a API)
+- **Context Propagation**: mecanismo que conecta spans entre serviços (W3C TraceContext / B3)
 
-📊 Use Cases
-Performance monitoring
-Root cause analysis
-Microservices observability
-Kubernetes troubleshooting
-DevOps and SRE practices
+### OpenTelemetry Collector — Pipeline
 
-🧭 Why OpenTelemetry + Dynatrace?
+```
+Receivers  → Processors         → Exporters
+otlp/grpc    memory_limiter       otlphttp/dynatrace
+otlp/http    batch                logging (debug)
+             resource (add attrs)
+```
 
-| OpenTelemetry     | Dynatrace             |
-| ----------------- | --------------------- |
-| Vendor-neutral    | Full platform         |
-| Standardized data | AI-driven analysis    |
-| Flexible pipeline | Root cause detection  |
-| Multi-cloud ready | End-to-end visibility |
+### Por que OIDC no GitHub Actions?
 
-📈 Future Improvements
-Add SLO/SLA monitoring
-Integrate Prometheus and Grafana
-Implement alerting
-Add GitOps with ArgoCD
-Improve security (RBAC, secrets)
+- Elimina secrets de longa duração (client_secret)
+- Token temporário gerado por GitHub, verificado pelo Azure AD
+- Princípio do menor privilégio: cada workflow tem sua própria identidade
 
-👨‍💻 Author
+### AKS — Conceitos Importantes
 
-Edilson Monteiro
-DevOps Engineer | Cloud | Observability
+| Conceito | O que é | Onde aparece neste projeto |
+|----------|---------|---------------------------|
+| Liveness Probe | Reinicia o container se falhar | `app-deployment.yaml` |
+| Readiness Probe | Remove do Service se não estiver pronto | `app-deployment.yaml` |
+| Startup Probe | Evita kill durante inicialização lenta | `app-deployment.yaml` |
+| PodAntiAffinity | Distribui pods entre nós (HA) | `app-deployment.yaml` |
+| ResourceQuota | Limites de CPU/memória por namespace | definido via requests/limits |
+| Managed Identity | Autenticação sem secrets (AKS → ACR) | `main.tf` AcrPull role |
 
-💬 Final Notes
+## Por que OpenTelemetry + Dynatrace?
+
+| OpenTelemetry | Dynatrace |
+|---------------|-----------|
+| Vendor-neutral | Plataforma completa de APM |
+| Padronizado (CNCF) | Análise com IA (Davis) |
+| Multi-cloud ready | Root Cause Detection automático |
+| SDK + Collector | SLO/SLA management |
+
+## Autor
+
+Edilson Monteiro — DevOps Engineer | Cloud | Observability
+
 
 This project simulates a real-world observability scenario in cloud-native environments, focusing on:
 

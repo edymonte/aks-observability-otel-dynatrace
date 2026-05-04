@@ -1,0 +1,103 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OTEL COLLECTOR — ConfigMap
+#
+# O OpenTelemetry Collector é um proxy de telemetria vendor-neutral.
+# Pipeline:  Receivers → Processors → Exporters
+#
+# RECEIVERS: Onde o Collector recebe dados
+#   - otlp: aceita traces/metrics/logs via gRPC (4317) e HTTP (4318)
+#
+# PROCESSORS: Transformações aplicadas aos dados em trânsito
+#   - memory_limiter: evita OOM do processo do Collector
+#   - batch: agrupa dados para envio eficiente (reduz chamadas HTTP/gRPC)
+#   - resource: adiciona atributos globais a todos os spans/métricas
+#
+# EXPORTERS: Destino final dos dados
+#   - otlphttp/dynatrace: envia para o endpoint OTLP do Dynatrace
+#   - logging: útil para debug (jamais em produção com verbosity "detailed")
+#
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability-lab
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: observability
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317   # porta padrão gRPC — usada pelo SDK da aplicação
+          http:
+            endpoint: 0.0.0.0:4318   # porta padrão HTTP — alternativa ao gRPC
+
+    processors:
+      # Protege contra picos de memória do Collector
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 400
+        spike_limit_mib: 100
+
+      # Agrupa dados antes de exportar (melhora throughput e reduz custo de API)
+      batch:
+        send_batch_size: 512
+        send_batch_max_size: 1024
+        timeout: 10s
+
+      # Injeta atributos de recurso em todos os sinais (traces, metrics, logs)
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            value: "aks-observability-cluster"
+            action: insert
+          - key: cloud.provider
+            value: "azure"
+            action: insert
+
+    exporters:
+      # Exporta para Dynatrace via protocolo OTLP/HTTP
+      # Dynatrace suporta OTLP nativamente (não precisa de plugin especial)
+      otlphttp/dynatrace:
+        endpoint: "${env:DT_OTLP_ENDPOINT}"
+        headers:
+          Authorization: "${env:DT_API_TOKEN}"
+        compression: gzip
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 120s
+
+      # Exporter de debug — remover ou reduzir verbosidade em produção
+      debug:
+        verbosity: normal
+
+    service:
+      pipelines:
+        # Pipeline de Traces
+        traces:
+          receivers:  [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters:  [otlphttp/dynatrace, debug]
+
+        # Pipeline de Métricas
+        metrics:
+          receivers:  [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters:  [otlphttp/dynatrace]
+
+        # Pipeline de Logs (pronto para expansão futura)
+        logs:
+          receivers:  [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters:  [otlphttp/dynatrace]
+
+      # Expõe métricas internas do próprio Collector (auto-observabilidade!)
+      telemetry:
+        metrics:
+          level: detailed
+          address: 0.0.0.0:8888

@@ -1,0 +1,135 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OTEL COLLECTOR — Deployment
+#
+# O Collector roda como um Deployment (não DaemonSet) neste projeto,
+# atuando como "gateway" centralizado de telemetria.
+#
+# Padrões de deploy do Collector:
+#   - Sidecar:    uma instância por pod (máximo isolamento, alto custo)
+#   - DaemonSet:  uma instância por nó (recomendado para logs de host)
+#   - Deployment/Gateway: instância centralizada (este caso — mais simples)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability-lab
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        app.kubernetes.io/name: otel-collector
+      annotations:
+        # Força restart do pod quando o ConfigMap muda (hash trick)
+        checksum/config: "{{ include (print .Template.BasePath \"/otel-collector-configmap.yaml\") . | sha256sum }}"
+
+    spec:
+      # ServiceAccount com privilégios mínimos (princípio do menor privilégio)
+      serviceAccountName: default
+
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.100.0
+          # "contrib" inclui o exporter do Dynatrace e outros extras
+
+          args:
+            - "--config=/conf/otel-collector-config.yaml"
+
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+            - name: metrics
+              containerPort: 8888  # métricas internas do Collector (Prometheus scrape)
+              protocol: TCP
+
+          env:
+            # Injeta o token e endpoint do Dynatrace a partir do Secret
+            - name: DT_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dynatrace-secret
+                  key: DT_API_TOKEN
+            - name: DT_OTLP_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: dynatrace-secret
+                  key: DT_OTLP_ENDPOINT
+
+          volumeMounts:
+            - name: config-volume
+              mountPath: /conf
+              readOnly: true
+
+          # Recursos: fundamental para o Kubernetes scheduler e para evitar noisy neighbor
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          # Liveness: reinicia o container se ele travar
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133  # health_check extension (se habilitada no config)
+            initialDelaySeconds: 15
+            periodSeconds: 20
+
+          # Readiness: remove do Service se não estiver pronto para receber tráfego
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+      volumes:
+        - name: config-volume
+          configMap:
+            name: otel-collector-config
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# OTEL COLLECTOR — Service
+# ClusterIP: acessível apenas dentro do cluster (aplicações → Collector)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability-lab
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: observability
+spec:
+  selector:
+    app: otel-collector
+  type: ClusterIP
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+      protocol: TCP
