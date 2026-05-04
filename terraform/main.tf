@@ -120,6 +120,9 @@ resource "azurerm_kubernetes_cluster" "main" {
     load_balancer_sku = "standard"
   }
 
+  # OIDC Issuer: já habilitado no cluster, não pode ser desabilitado
+  oidc_issuer_enabled = true
+
   # Azure Monitor para Containers (envia métricas ao Log Analytics)
   monitor_metrics {}
 
@@ -127,11 +130,9 @@ resource "azurerm_kubernetes_cluster" "main" {
     log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   }
 
-  # RBAC com Entra ID (AAD) — recomendado em produção
-  azure_active_directory_role_based_access_control {
-    managed                = true
-    azure_rbac_enabled     = true
-  }
+  # Nota: azure_active_directory_role_based_access_control removido para
+  # compatibilidade com dispositivos pessoais (Conditional Access Avanade).
+  # Em produção, reativar com managed=true e azure_rbac_enabled=true.
 
   tags = var.tags
 }
