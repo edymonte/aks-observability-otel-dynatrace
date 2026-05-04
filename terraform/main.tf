@@ -146,4 +146,10 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
   role_definition_name             = "AcrPull"
   scope                            = azurerm_container_registry.acr.id
   skip_service_principal_aad_check = true
+
+  lifecycle {
+    # Role assignments não suportam update — ignorar drift no principal_id
+    # causado por re-computação após modificação do AKS cluster
+    ignore_changes = [principal_id]
+  }
 }
