@@ -85,16 +85,16 @@ spec:
           # Liveness: reinicia o container se ele travar
           livenessProbe:
             httpGet:
-              path: /
-              port: 13133  # health_check extension (se habilitada no config)
+              path: /metrics
+              port: 8888  # metrics endpoint — confirmado funcionando nos logs
             initialDelaySeconds: 15
             periodSeconds: 20
 
           # Readiness: remove do Service se não estiver pronto para receber tráfego
           readinessProbe:
             httpGet:
-              path: /
-              port: 13133
+              path: /metrics
+              port: 8888
             initialDelaySeconds: 5
             periodSeconds: 10
 
