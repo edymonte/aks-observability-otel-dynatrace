@@ -25,15 +25,15 @@ const sdk = new NodeSDK({
   }),
 
   // Exporter de Traces → OTLP HTTP para o Collector (porta 4318)
-  traceExporter: new OTLPTraceExporter({
-    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318',
-  }),
+  // O SDK lê OTEL_EXPORTER_OTLP_ENDPOINT automaticamente e adiciona /v1/traces.
+  // NÃO passar url explícita aqui — o SDK trata url explícita como endpoint completo
+  // (sem adicionar o signal path), o que quebra o envio de traces.
+  traceExporter: new OTLPTraceExporter(),
 
   // Exporter de Métricas → OTLP HTTP para o Collector, exportando a cada 30s
+  // Idem: o SDK adiciona /v1/metrics ao OTEL_EXPORTER_OTLP_ENDPOINT automaticamente.
   metricReader: new PeriodicExportingMetricReader({
-    exporter: new OTLPMetricExporter({
-      url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318',
-    }),
+    exporter: new OTLPMetricExporter(),
     exportIntervalMillis: 30_000,
   }),
 
