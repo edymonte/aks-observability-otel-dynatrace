@@ -11,6 +11,7 @@
 #   - memory_limiter: evita OOM do processo do Collector
 #   - batch: agrupa dados para envio eficiente (reduz chamadas HTTP/gRPC)
 #   - resource: adiciona atributos globais a todos os spans/métricas
+#   - filter/drop_health: descarta spans da rota /health (ruído de probes K8s)
 #
 # EXPORTERS: Destino final dos dados
 #   - otlphttp/dynatrace: envia para o endpoint OTLP do Dynatrace
@@ -52,6 +53,15 @@ data:
         send_batch_max_size: 1024
         timeout: 10s
 
+      # Descarta spans gerados pelos health check probes do Kubernetes.
+      # A rota /health responde mas não tem valor de negócio nos traces —
+      # mantê-la polui o Distributed Tracing e aumenta custo de ingestão.
+      filter/drop_health:
+        error_mode: ignore
+        traces:
+          span:
+            - 'attributes["http.target"] == "/health"'
+
       # Injeta atributos de recurso em todos os sinais (traces, metrics, logs)
       resource:
         attributes:
@@ -86,7 +96,7 @@ data:
         # Pipeline de Traces
         traces:
           receivers:  [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, filter/drop_health, resource, batch]
           exporters:  [otlphttp/dynatrace, debug]
 
         # Pipeline de Métricas
