@@ -12,6 +12,7 @@
 #   - batch: agrupa dados para envio eficiente (reduz chamadas HTTP/gRPC)
 #   - resource: adiciona atributos globais a todos os spans/métricas
 #   - filter/drop_health: descarta spans da rota /health (ruído de probes K8s)
+#   - cumulativetodelta: converte métricas CUMULATIVE → DELTA (exigido pelo Dynatrace)
 #
 # EXPORTERS: Destino final dos dados
 #   - otlphttp/dynatrace: envia para o endpoint OTLP do Dynatrace
@@ -62,6 +63,13 @@ data:
           span:
             - 'attributes["http.target"] == "/health"'
 
+      # Converte métricas de temporalidade CUMULATIVE para DELTA.
+      # O SDK Node.js exporta histogramas e somas como CUMULATIVE por padrão,
+      # mas o endpoint OTLP do Dynatrace exige DELTA para esses tipos.
+      # Sem este processor: http.server.duration e http_requests_total são rejeitados
+      # com UNSUPPORTED_METRIC_TYPE_CUMULATIVE_HISTOGRAM / MONOTONIC_CUMULATIVE_SUM.
+      cumulativetodelta:
+
       # Injeta atributos de recurso em todos os sinais (traces, metrics, logs)
       resource:
         attributes:
@@ -102,7 +110,7 @@ data:
         # Pipeline de Métricas
         metrics:
           receivers:  [otlp]
-          processors: [memory_limiter, resource, batch]
+          processors: [memory_limiter, cumulativetodelta, resource, batch]
           exporters:  [otlphttp/dynatrace]
 
         # Pipeline de Logs (pronto para expansão futura)
